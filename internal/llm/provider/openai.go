@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -527,6 +528,26 @@ func (o *openaiClient) shouldRetry(attempts int, err error) (bool, int64, error)
 		}
 
 		retryAfterValues = apiErr.Response.Header.Values("Retry-After")
+
+		// Cerebras-specific rate limit headers
+		// Prefer x-ratelimit-reset-tokens-minute (seconds until reset)
+		// Ref: https://inference-docs.cerebras.ai/support/rate-limits
+		providerID := strings.ToLower(o.providerOptions.config.ID)
+		providerName := strings.ToLower(o.providerOptions.config.Name)
+		if strings.Contains(providerID, "cerebras") || strings.Contains(providerName, "cerebras") {
+			if apiErr.Response != nil {
+				resetStr := apiErr.Response.Header.Get("x-ratelimit-reset-tokens-minute")
+				if resetStr != "" {
+					if sec, perr := strconv.ParseFloat(resetStr, 64); perr == nil {
+						retryMs = int(sec * 1000)
+						if retryMs < 1000 { // minimal wait to avoid hot-looping
+							retryMs = 1000
+						}
+						return true, int64(retryMs), nil
+					}
+				}
+			}
+		}
 	}
 
 	if apiErr != nil {
